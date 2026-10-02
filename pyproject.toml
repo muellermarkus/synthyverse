@@ -7,7 +7,7 @@ name = "synthyverse"
 version = "0.2.7"
 description = "Synthetic data generation and evaluation library"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.12"
 license = {text = "MIT License"}
 authors = [
     {name = "Jim Achterberg"},
@@ -44,6 +44,7 @@ dependencies = [
     "einops",
     "imbalanced-learn",
     "xgb-diffusion",
+    "torchdiffeq>=0.2.5",
 ]
 
 [tool.setuptools]

@@ -20,6 +20,7 @@ _BASE_GENERATORS = {
     "TabDDPMGenerator": (".tabddpm_generator", "tabddpm"),
     "TabDiffGenerator": (".tabdiff_generator", "tabdiff"),
     "TabCascadeGenerator": (".tabcascade_generator", "tabcascade"),
+    "TabbyFlowGenerator": (".tabbyflow_generator", "tabbyflow"),
     "UnivariateGenerator": (".univariate_generator", "univariate"),
     "SMOTEGenerator": (".smote_generator", "smote"),
     "SynthpopGenerator": (".synthpop_generator", "synthpop"),
