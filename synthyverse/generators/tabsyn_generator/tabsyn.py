@@ -340,7 +340,7 @@ class TabSynGenerator(BaseGenerator):
             x_val_cat = x_val[self.discrete_features].values
             x_val_cat = torch.from_numpy(x_val_cat).long().to(self.device)
             best_val_loss = float("inf")
-            best_vae = deepcopy(vae.state_dict())
+            best_vae = clone_state_dict(vae)
 
         pbar = tqdm(range(epochs))
 
