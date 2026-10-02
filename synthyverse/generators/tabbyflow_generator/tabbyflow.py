@@ -26,6 +26,81 @@ CLossWeightSchedule = Literal["anneal", "fixed"]
 
 
 class TabbyFlowGenerator(BaseGenerator):
+    """TabbyFlow generator for mixed-type tabular data.
+
+    TabbyFlow applies Variational Flow Matching to tabular data.
+
+    Based on the implementation from the original paper: https://github.com/andresguzco/ef-vfm.
+
+    Paper: "Exponential Family Variational Flow Matching for Tabular Data Generation" by Guzman-Cordero et al. (2025).
+
+    Args:
+        epochs (int): Number of training epochs. Default: 8000.
+        training_steps (int, optional): Total number of training steps. When
+            provided, this overrides ``epochs`` by deriving the epoch count from
+            the training sample size and batch size. Default: None.
+        lr (float): Learning rate. Default: 1e-3.
+        weight_decay (float): Weight decay for AdamW. Default: 0.
+        batch_size (int): Batch size for training and sampling. Default: 4096.
+        ema_decay (float): Exponential moving average decay. Default: 0.997.
+        lr_scheduler (str): Learning rate scheduler. Options:
+            "reduce_lr_on_plateau" lowers the learning rate when training loss
+            plateaus, using ``reduce_lr_patience`` and ``factor``; "anneal"
+            linearly decays the learning rate to 0 over training; "fixed"
+            keeps the initial learning rate. Default: "reduce_lr_on_plateau".
+        reduce_lr_patience (int): Plateau scheduler patience. Default: 50.
+        factor (float): Multiplicative factor for plateau learning rate decay. Default: 0.90.
+        closs_weight_schedule (str): Continuous loss weight schedule. Options:
+            "anneal" linearly reduces the numerical-feature loss weight to 0
+            over training; "fixed" keeps it at ``c_lambda``. Default: "anneal".
+        c_lambda (float): Weight for the continuous loss. Default: 1.0.
+        d_lambda (float): Weight for the discrete loss. Default: 1.0.
+        num_layers (int): Number of backbone layers. Default: 2.
+        d_token (int): Token dimension in the backbone. Default: 4.
+        n_head (int): Number of attention heads. Default: 1.
+        mlp_factor (int): MLP expansion factor. Default: 32.
+        bias (bool): Whether to use bias terms in the backbone. Default: True.
+        embedding_dim (int): Projection and time embedding dimension. Default: 1024.
+        mlp_dim (int): Hidden width of the denoiser MLP. Default: 2048.
+        mlp_layers (int): Number of hidden denoiser MLP layers with width
+            ``mlp_dim``. Default: 2.
+        max_grad_nrom (float): Maximum norm for gradient clipping. Disable by setting it to 0. Default: 1.0.
+        warmup_epochs (int): Numer of epochs for warming up learning rate linearly. Default: 100.
+        cap_train_time (float): Time limit in seconds for training. Default: None.
+        target_column (str, optional): Column used for stratified validation
+            splitting. Default: None.
+        val_size (float): Fraction of rows reserved for C2ST validation. Set
+            to <=0 to disable C2ST early stopping. Default: -1.
+        val_steps (int): Epochs between validation C2ST checks, or training
+            steps when ``training_steps`` is provided. Set to <=0 to disable
+            validation. Default: -1.
+        patience (int): Number of consecutive non-improving C2ST validation
+            checks before early stopping. Default: 3.
+        max_validation_rows (int): Maximum number of rows reserved for C2ST
+            validation. Negative values remove the cap. Extra rows remain in the training set. Default: 30000.
+
+    Example:
+        >>> import pandas as pd
+        >>> from synthyverse.generators import TabbyFlowGenerator
+        >>>
+        >>> # Load data
+        >>> X = pd.read_csv("data.csv")
+        >>> discrete_features = ["category_col"]
+        >>>
+        >>> # Create generator
+        >>> generator = TabbyFlowGenerator(
+        ...     epochs=8000,
+        ...     batch_size=4096
+        ... )
+        >>>
+        >>> # Fit and generate
+        >>> generator.fit(X, discrete_features)
+        >>> X_syn = generator.generate(1000)
+    """
+
+    # FIXME: num_timesteps for smapling???
+    name = "tabbyflow"
+
     def __init__(
         self,
         epochs: int = 8000,
@@ -50,6 +125,8 @@ class TabbyFlowGenerator(BaseGenerator):
         mlp_layers: int = 2,
         max_grad_norm: float = 1.0,
         warmup_epochs: int = 100,
+        cap_train_time: float | None = None,
+        target_column: str | None = None,
         val_size: float = -1,
         val_steps: int = -1,
         patience: int = 3,
@@ -81,6 +158,8 @@ class TabbyFlowGenerator(BaseGenerator):
         self.mlp_layers = mlp_layers
         self.max_grad_norm = max_grad_norm
         self.warmup_epochs = warmup_epochs
+        self.cap_train_time = cap_train_time
+        self.target_column = target_column
         self.val_size = val_size
         self.val_steps = val_steps
         self.patience = patience
