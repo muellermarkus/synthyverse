@@ -17,7 +17,6 @@ from synthyverse import evaluation
 from synthyverse.generators import DataProcessor, get_generator
 from synthyverse.utils.utils import memory_guarded
 
-
 RESULT_COLUMNS = ["metric name", "metric value", "train_seed", "set"]
 BYTES_PER_MIB = 1024 * 1024
 _PROCESS_MEMORY_READER = None
@@ -889,7 +888,7 @@ class TabularSynthesisBenchmark:
             return
         dataset_dir = self._dataset_dir(train_seed, sampling_seed)
         dataset_dir.mkdir(parents=True, exist_ok=True)
-        X_syn.to_parquet(dataset_dir / "synthetic_train.parquet", index=False)
+        X_syn.to_parquet(dataset_dir / "syn.parquet", index=False)
 
     def _load_synthetic_dataset(
         self,
@@ -898,7 +897,7 @@ class TabularSynthesisBenchmark:
         processor: DataProcessor,
     ) -> pd.DataFrame:
         dataset_dir = self._dataset_dir(train_seed, sampling_seed)
-        train_path = dataset_dir / "synthetic_train.parquet"
+        train_path = dataset_dir / "syn.parquet"
         if not train_path.exists():
             raise FileNotFoundError(
                 f"No saved synthetic datasets found for train_seed={train_seed}, "
