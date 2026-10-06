@@ -340,7 +340,7 @@ class TabSynGenerator(BaseGenerator):
             x_val_cat = x_val[self.discrete_features].values
             x_val_cat = torch.from_numpy(x_val_cat).long().to(self.device)
             best_val_loss = float("inf")
-            best_vae = deepcopy(vae.state_dict())
+            best_vae = clone_state_dict(vae)
 
         pbar = tqdm(range(epochs))
 
@@ -398,7 +398,7 @@ class TabSynGenerator(BaseGenerator):
 
                     if val_loss < best_val_loss:
                         best_val_loss = val_loss
-                        best_vae = deepcopy(vae.state_dict())
+                        best_vae = clone_state_dict(vae)
                         patience = 0
                     else:
                         patience += 1
@@ -569,9 +569,7 @@ class TabSynGenerator(BaseGenerator):
             validate()
 
         if best_val_model is not None:
-            model.load_state_dict(
-                {k: v.to(self.device) for k, v in best_val_model.items()}
-            )
+            model.load_state_dict(best_val_model)
         model.eval()
         return model
 
