@@ -1,0 +1,623 @@
+#  Copyright (c) Prior Labs GmbH 2025.
+#  Licensed under the Apache License, Version 2.0
+#  from https://github.com/PriorLabs/tabpfn-extensions/blob/main/src/tabpfn_extensions/utils.py
+from __future__ import annotations
+
+import importlib.util
+import itertools
+import logging
+import os
+import warnings
+from collections.abc import Iterator
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar
+
+import numpy as np
+
+# Type checking imports
+if TYPE_CHECKING:
+    import torch
+    from numpy.typing import NDArray
+
+T = TypeVar("T")
+
+
+class TabPFNEstimator(Protocol):
+    def fit(self, X: Any, y: Any) -> Any: ...
+
+    def predict(self, X: Any) -> Any: ...
+
+
+def warn_if_no_kv_cache(model: Any, *, context: str = "This operation") -> None:
+    """Warn if a TabPFN model isn't configured to use the KV cache.
+
+    The KV cache (improved with TabPFN-3) caches the encoder pass over the training set so that
+    repeated predicts against the same fitted model don't re-encode the
+    training data each time. Extensions that issue many predicts per fit
+    (e.g. imputation-based SHAP, certain feature-selection or HPO routines)
+    benefit from it — without the cache, the encoder pass over the training
+    set runs on every predict and these extensions can be 10-100x slower
+    than necessary.
+
+    What has to hold depends on the backend. An endpoint-backed estimator
+    (self-hosted container, SageMaker, Foundry) needs ``use_kv_cache=True``,
+    which is the only condition. A local model needs both:
+        1. ``model`` was constructed with ``fit_mode="fit_with_cache"``
+           (a constructor argument, must be set BEFORE ``.fit()``).
+        2. ``model.executor_.keep_cache_on_device`` is ``True`` (set AFTER
+           ``.fit()``; usually the default but worth setting explicitly).
+
+    This helper warns if either is missing, but does not raise — users may
+    have intentional reasons (e.g. memory).
+
+    Args:
+        model: The TabPFN model (classifier or regressor) to inspect.
+        context: Short noun phrase describing the caller's operation, used
+            to make the warning message specific (e.g. ``"Imputation-based
+            SHAP"``, ``"Sequential feature selection"``). Defaults to a
+            generic ``"This operation"``.
+    """
+    # The endpoint-backed backends (self-hosted container, SageMaker, Foundry)
+    # do support the cache, through a `use_kv_cache` constructor flag. Their
+    # classes live under tabpfn_client, so this has to be checked before the
+    # MRO test below, which would otherwise call them unsupported.
+    if hasattr(model, "use_kv_cache"):
+        if not model.use_kv_cache:
+            warnings.warn(
+                f"{context} issues many predictions against a single fit, but "
+                "this estimator was built without `use_kv_cache=True`, so the "
+                "endpoint re-fits on every call. Pass `use_kv_cache=True` to "
+                "reuse the fitted model between predictions.",
+                UserWarning,
+                stacklevel=3,
+            )
+        return
+
+    # The managed API backend has no endpoint-side cache to reuse, and doesn't
+    # expose fit_mode — recommend the local package rather than firing the
+    # generic "set fit_mode='fit_with_cache'" message, which would TypeError on
+    # it. Walk the MRO because tabpfn-extensions wraps the client base classes
+    # in tabpfn_extensions.utils, so the *immediate* class' __module__ is
+    # "tabpfn_extensions.utils" and won't match.
+    mro_modules = (getattr(cls, "__module__", "") for cls in type(model).__mro__)
+    if any("tabpfn_client" in m for m in mro_modules):
+        warnings.warn(
+            f"{context} would benefit substantially from the KV cache, but "
+            "the tabpfn-client backend does not currently support it. "
+            "Install the local tabpfn package (`pip install tabpfn`) and "
+            "use TabPFNClassifier/TabPFNRegressor with "
+            "fit_mode='fit_with_cache' to enable it.",
+            UserWarning,
+            stacklevel=3,
+        )
+        return
+
+    fit_mode = getattr(model, "fit_mode", None)
+    if fit_mode is None:
+        # Not a TabPFN-shaped model (or some custom estimator without a
+        # fit_mode attribute). Don't fire a misleading warning; the caller
+        # is responsible for ensuring the estimator is something we can
+        # actually accelerate.
+        return
+    if fit_mode != "fit_with_cache":
+        warnings.warn(
+            f"TabPFN model has fit_mode={fit_mode!r}, not 'fit_with_cache'. "
+            f"{context} will be substantially slower than necessary. "
+            "Construct the model with TabPFNClassifier or TabPFNRegressor "
+            "(fit_mode='fit_with_cache', ...) "
+            "(set BEFORE calling .fit) to enable the KV cache, then set "
+            "model.executor_.keep_cache_on_device = True after .fit().",
+            UserWarning,
+            stacklevel=3,
+        )
+        return  # if fit_mode is wrong, the second check is moot
+
+    executor = getattr(model, "executor_", None)
+    if executor is None:
+        # model not fitted yet — we can't check; downstream code will fail anyway
+        return
+    if not getattr(executor, "keep_cache_on_device", False):
+        warnings.warn(
+            "TabPFN model has fit_mode='fit_with_cache' but "
+            f"executor_.keep_cache_on_device is False. {context} will "
+            "be slower than necessary because the cache is shuttled to/from CPU "
+            "on every predict call. Set "
+            "`model.executor_.keep_cache_on_device = True` after .fit().",
+            UserWarning,
+            stacklevel=3,
+        )
+
+
+def is_tabpfn(estimator: Any) -> bool:
+    """Check if an estimator is a TabPFN model."""
+    try:
+        return any(
+            [
+                "TabPFN" in str(estimator.__class__),
+                "TabPFN" in str(estimator.__class__.__bases__),
+                any("TabPFN" in str(b) for b in estimator.__class__.__bases__),
+                "tabpfn.base_model.TabPFNBaseModel" in str(estimator.__class__.mro()),
+            ],
+        )
+    except (AttributeError, TypeError):
+        return False
+
+
+DeviceSpecification = Literal["auto", "cuda", "cpu"]
+
+
+@dataclass
+class FakeTorchDevice:
+    """Fake used to represent torch.device used when PyTorch is not installed."""
+
+    type: str
+
+
+def _tabpfn_device(device: Any) -> torch.device:
+    """TabPFN's own reading of its `device` argument; needs the local package."""
+    try:
+        # tabpfn < 2.1.4
+        from tabpfn.utils import infer_device_and_type
+
+        return infer_device_and_type(device)
+    except ImportError:
+        pass
+
+    # tabpfn >= 2.1.4
+    from tabpfn.utils import infer_devices
+
+    return infer_devices(device)[0]
+
+
+def infer_device(device: DeviceSpecification) -> torch.device | FakeTorchDevice:
+    """Where TabPFN itself runs: a CPU stand-in when the client serves the model."""
+    if importlib.util.find_spec("tabpfn") is None:
+        # If tabpfn is not installed then prediction will use the API client, thus we
+        # just return "cpu". We use a fake device because PyTorch may also not be
+        # installed.
+
+        if device not in ("cpu", "auto"):
+            warnings.warn(
+                f"{device} device requested but 'tabpfn' package not found. "
+                "Falling back to CPU as the client-based API does not support GPU.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return FakeTorchDevice(type="cpu")
+
+    return _tabpfn_device(device)
+
+
+def infer_torch_device(device: Any) -> torch.device:
+    """Where torch work of this process runs, with or without the local `tabpfn`.
+
+    With `tabpfn` installed this is TabPFN's own reading of `device`. Without it,
+    the same rule on torch directly: for `"auto"`, CUDA, else MPS, else the CPU,
+    minus what `TABPFN_EXCLUDE_DEVICES` names; anything else is parsed as a torch
+    device, the first of several.
+    """
+    if importlib.util.find_spec("tabpfn") is not None:
+        return _tabpfn_device(device)
+
+    import torch
+
+    if isinstance(device, str) and device == "auto":
+        excluded = {
+            d.strip() for d in os.getenv("TABPFN_EXCLUDE_DEVICES", "").split(",")
+        }
+        if "cuda" not in excluded and torch.cuda.is_available():
+            return torch.device("cuda")
+        if "mps" not in excluded and torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+    if isinstance(device, list | tuple):
+        device = device[0]
+    return torch.device(device)
+
+
+USE_TABPFN_LOCAL = os.getenv("USE_TABPFN_LOCAL", "true").lower() == "true"
+
+# First tabpfn-client version to attach `criterion` to output_type="full".
+_MIN_CLIENT_VERSION = "0.2.7"
+
+
+def _check_client_version() -> None:
+    """Raise if the installed tabpfn-client is too old for the regressor wrapper.
+
+    ``ClientTabPFNRegressor`` relies on the client attaching the
+    ``FullSupportBarDistribution`` criterion to ``output_type="full"``
+    predictions (tabpfn-client >= 0.2.7); with older clients this would only
+    surface much later as a bare ``KeyError: 'criterion'``. tabpfn-client is
+    not a declared dependency of tabpfn-extensions, so the version floor has
+    to be enforced here rather than in pyproject.toml.
+
+    Raises:
+        ImportError: If the installed tabpfn-client is older than
+            ``_MIN_CLIENT_VERSION``.
+    """
+    import importlib.metadata
+
+    from packaging.version import Version
+
+    try:
+        installed = importlib.metadata.version("tabpfn-client")
+    except importlib.metadata.PackageNotFoundError:
+        return  # editable/dev installs without metadata: assume new enough
+    if Version(installed) < Version(_MIN_CLIENT_VERSION):
+        raise ImportError(
+            f"tabpfn-extensions requires tabpfn-client>={_MIN_CLIENT_VERSION} "
+            f"(installed: {installed}): output_type='full' needs the "
+            "criterion the client attaches itself since that version. "
+            "Upgrade with `pip install --upgrade tabpfn-client`.",
+        )
+
+
+try:
+    from tabpfn_client import (
+        TabPFNClassifier as ClientTabPFNClassifierBase,
+        TabPFNRegressor as ClientTabPFNRegressorBase,
+    )
+
+    # Debug info controlled by environment variable
+    # (using logging rather than print for better debugging)
+    if os.getenv("TABPFN_DEBUG", "false").lower() == "true":
+        logging.info("Using TabPFN client")
+
+    # Wrapper classes to add device parameter
+    # we can't use *args because scikit-learn needs to know the parameters of the constructor
+    class ClientTabPFNClassifier(ClientTabPFNClassifierBase):
+        def __init__(
+            self,
+            device: str | None = None,
+            categorical_features_indices: list[int] | None = None,
+            model_path: str = "default",
+            n_estimators: int = 4,
+            softmax_temperature: float = 0.9,
+            balance_probabilities: bool = False,
+            average_before_softmax: bool = False,
+            ignore_pretraining_limits: bool = False,
+            inference_precision: Literal["autocast", "auto"] = "auto",
+            random_state: int
+            | np.random.RandomState
+            | np.random.Generator
+            | None = None,
+            inference_config: dict | None = None,
+            paper_version: bool = False,
+        ) -> None:
+            self.device = device
+            # Categorical features need to be passed but are not used by client
+            self.categorical_features_indices = categorical_features_indices
+            if categorical_features_indices is not None:
+                warnings.warn(
+                    "categorical_features_indices is not supported in the client version of TabPFN and will be ignored",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            if "/" in model_path:
+                model_name = model_path.split("/")[-1].split("-")[-1].split(".")[0]
+                if model_name == "classifier":
+                    model_name = "default"
+                self.model_path = model_name
+            else:
+                self.model_path = model_path
+
+            super().__init__(
+                model_path=self.model_path,
+                n_estimators=n_estimators,
+                softmax_temperature=softmax_temperature,
+                balance_probabilities=balance_probabilities,
+                average_before_softmax=average_before_softmax,
+                ignore_pretraining_limits=ignore_pretraining_limits,
+                inference_precision=inference_precision,
+                random_state=random_state,
+                inference_config=inference_config,
+                paper_version=paper_version,
+            )
+
+        def get_params(self, deep: bool = True) -> dict[str, Any]:
+            """Return parameters for this estimator."""
+            params = super().get_params(deep=deep)
+            params.pop("device")
+            params.pop("categorical_features_indices")
+            return params
+
+    class ClientTabPFNRegressor(ClientTabPFNRegressorBase):
+        def __init__(
+            self,
+            device: str | None = None,
+            categorical_features_indices: list[int] | None = None,
+            model_path: str = "default",
+            n_estimators: int = 8,
+            softmax_temperature: float = 0.9,
+            average_before_softmax: bool = False,
+            ignore_pretraining_limits: bool = False,
+            inference_precision: Literal["autocast", "auto"] = "auto",
+            random_state: int
+            | np.random.RandomState
+            | np.random.Generator
+            | None = None,
+            inference_config: dict | None = None,
+            paper_version: bool = False,
+        ) -> None:
+            _check_client_version()
+            self.device = device
+            self.categorical_features_indices = categorical_features_indices
+            if categorical_features_indices is not None:
+                warnings.warn(
+                    "categorical_features_indices is not supported in the client version of TabPFN and will be ignored",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
+            if "/" in model_path:
+                model_name = model_path.split("/")[-1].split("-")[-1].split(".")[0]
+                if model_name == "regressor":
+                    model_name = "default"
+                self.model_path = model_name
+            else:
+                self.model_path = model_path
+
+            super().__init__(
+                model_path=self.model_path,
+                n_estimators=n_estimators,
+                softmax_temperature=softmax_temperature,
+                average_before_softmax=average_before_softmax,
+                ignore_pretraining_limits=ignore_pretraining_limits,
+                inference_precision=inference_precision,
+                random_state=random_state,
+                inference_config=inference_config,
+                paper_version=paper_version,
+            )
+
+        # predict is inherited unchanged: tabpfn-client >= 0.2.7 (enforced in
+        # __init__) supports all output types itself and attaches the
+        # criterion to output_type="full".
+
+        def get_params(self, deep: bool = True) -> dict[str, Any]:
+            """Return parameters for this estimator."""
+            params = super().get_params(deep=deep)
+            params.pop("device")
+            params.pop("categorical_features_indices")
+            return params
+
+except ImportError:
+    ClientTabPFNClassifier = None
+    ClientTabPFNRegressor = None
+
+try:
+    from tabpfn import (
+        TabPFNClassifier as LocalTabPFNClassifier,
+        TabPFNRegressor as LocalTabPFNRegressor,
+    )
+except ImportError:
+    LocalTabPFNClassifier = None
+    LocalTabPFNRegressor = None
+
+
+def get_tabpfn_models() -> tuple[type, type]:
+    """Get the TabPFN model classes for the selected backend.
+
+    ``USE_TABPFN_LOCAL`` selects the backend; the function does not silently fall
+    back to the other one:
+    1. ``USE_TABPFN_LOCAL`` is True  -> the standard ``tabpfn`` package
+    2. ``USE_TABPFN_LOCAL`` is False -> the ``tabpfn-client`` API backend
+
+    If the selected backend is not installed, an ImportError is raised naming that
+    backend, rather than quietly using the other one.
+
+    Returns:
+        tuple[type, type]: A tuple containing (TabPFNClassifier, TabPFNRegressor) classes
+
+    Raises:
+        ImportError: If the selected TabPFN backend is not installed
+    """
+    if USE_TABPFN_LOCAL:
+        if LocalTabPFNClassifier is not None:
+            # Debug info controlled by environment variable
+            # (using logging rather than print for better debugging)
+            logging.info("Using TabPFN package")
+
+            return LocalTabPFNClassifier, LocalTabPFNRegressor
+        raise ImportError(
+            "Local TabPFN backend requested (USE_TABPFN_LOCAL=true) but the "
+            "'tabpfn' package is not installed.\n"
+            "pip install tabpfn       # install the local backend\n"
+            "USE_TABPFN_LOCAL=false   # or switch to the API/client backend",
+        )
+
+    if ClientTabPFNClassifier is not None:
+        return ClientTabPFNClassifier, ClientTabPFNRegressor
+    raise ImportError(
+        "API/client TabPFN backend requested (USE_TABPFN_LOCAL=false) but the "
+        "'tabpfn-client' package is not installed.\n"
+        "pip install tabpfn-client   # install the API/client backend\n"
+        "USE_TABPFN_LOCAL=true        # or switch to the local backend",
+    )
+
+
+TabPFNClassifier, TabPFNRegressor = get_tabpfn_models()
+
+
+# Cardinality threshold for the categorical-detection heuristic (constraint
+# (a) below): a column with at most this many unique values is treated as
+# categorical. This is a property of the *data* and is intentionally separate
+# from how many classes a model can *predict* (see ``get_max_num_classes``).
+MAX_UNIQUE_VALUES_FOR_CATEGORICAL = 40
+
+# Minimum average samples per category required to auto-detect a column as
+# categorical. Scales the support requirement with cardinality: a column needs
+# more than ``MIN_SAMPLES_PER_CATEGORY * n_unique`` rows, so high-cardinality
+# columns aren't called categorical on the basis of thin per-level evidence.
+MIN_SAMPLES_PER_CATEGORY = 10
+
+
+def get_max_num_classes(model: Any) -> int | None:
+    """Infer the max number of classes a TabPFN estimator can predict in one fit.
+
+    This is the single source of truth for the TabPFN class-count limit across
+    tabpfn-extensions, so a fix here propagates everywhere (unsupervised
+    classifier/regressor routing, the many-class output-coding wrapper, ...).
+
+    The value is read from the model's inference config
+    (``get_inference_config().MAX_NUMBER_OF_CLASSES``), which TabPFN exposes as
+    of v8.0.0 (the minimum version this package depends on).
+
+    Args:
+        model: A (typically TabPFN) classifier instance.
+
+    Returns:
+        The maximum number of classes the model supports, or ``None`` if
+        ``model`` is not a TabPFN estimator (i.e. has no inherent class limit).
+    """
+    if hasattr(model, "get_inference_config"):
+        cfg = model.get_inference_config()
+        val = getattr(cfg, "MAX_NUMBER_OF_CLASSES", None)
+        if val:
+            return int(val)
+    return None
+
+
+def infer_categorical_features(
+    X: np.ndarray,
+    categorical_features: list[int] | None = None,
+) -> list[int]:
+    """Infer which columns are categorical *features* (constraint (a) only).
+
+    This answers a data question — "is this column categorical?" — and is
+    deliberately independent of any model constraint. Whether a categorical
+    column has few enough levels for a TabPFN classifier to *predict* it
+    (constraint (b)) is a separate concern; derive that limit with
+    ``get_max_num_classes`` and apply it at the point of use.
+
+    A column is treated as categorical if any of these hold:
+    1. It is in the caller-provided ``categorical_features`` list.
+    2. It has a string/object/category dtype (pandas DataFrame).
+    3. It contains string values (numpy object array).
+    4. It is low-cardinality: at most ``MAX_UNIQUE_VALUES_FOR_CATEGORICAL``
+       unique values, with more than ``MIN_SAMPLES_PER_CATEGORY`` samples per
+       unique value on average, to avoid mislabelling columns that only look
+       low-cardinality because the sample is too thin per level.
+
+    Parameters:
+        X (np.ndarray or pandas.DataFrame): The input data.
+        categorical_features (list[int], optional): Initial list of categorical
+            feature indices. If None, will start with an empty list.
+
+    Returns:
+        list[int]: The indices of the categorical features.
+    """
+    if categorical_features is None:
+        categorical_features = []
+
+    _categorical_features: list[int] = []
+
+    # First detect based on data type (string/object features)
+    is_pandas = hasattr(X, "dtypes")
+
+    if is_pandas:
+        # Handle pandas DataFrame - use pandas' own type detection
+        import pandas as pd
+
+        for i, col_name in enumerate(X.columns):
+            col = X[col_name]
+            # Use pandas' built-in type checks for categorical features
+            if (
+                pd.api.types.is_categorical_dtype(col)
+                or pd.api.types.is_object_dtype(col)
+                or pd.api.types.is_string_dtype(col)
+            ):
+                _categorical_features.append(i)
+    else:
+        # Handle numpy array - check if any columns contain strings
+        for i in range(X.shape[1]):
+            if X.dtype == object:  # Check entire array dtype
+                # Try to access first non-nan value to check its type
+                col = X[:, i]
+                for val in col:
+                    if val is not None and not (
+                        isinstance(val, float) and np.isnan(val)
+                    ):
+                        if isinstance(val, str):
+                            _categorical_features.append(i)
+                            break
+
+    # Then detect based on cardinality (constraint (a) heuristic only).
+    for i in range(X.shape[-1]):
+        # Skip if already identified as categorical
+        if i in _categorical_features:
+            continue
+
+        # Get unique values - handle differently for pandas and numpy
+        n_unique = X.iloc[:, i].nunique() if is_pandas else len(np.unique(X[:, i]))
+
+        # Respect caller-declared categoricals unconditionally: whether such a
+        # column has too many levels for a model to *predict* is a separate
+        # concern (see ``get_max_num_classes``), handled at the point of use.
+        if i in categorical_features:
+            _categorical_features.append(i)
+
+        # Otherwise auto-detect low-cardinality columns as categorical, but
+        # only when there is enough support per level (samples / categories).
+        # ``n_unique`` can be 0 for an all-NaN pandas column, so guard the ratio.
+        elif (
+            0 < n_unique <= MAX_UNIQUE_VALUES_FOR_CATEGORICAL
+            and X.shape[0] / n_unique > MIN_SAMPLES_PER_CATEGORY
+        ):
+            _categorical_features.append(i)
+
+    return _categorical_features
+
+
+def softmax(logits: NDArray) -> NDArray:
+    """Apply softmax function to convert logits to probabilities.
+
+    Args:
+        logits: Input logits array of shape (n_samples, n_classes) or (n_classes,)
+
+    Returns:
+        Probabilities where values sum to 1 across the last dimension
+    """
+    # Handle both 2D and 1D inputs
+    if logits.ndim == 1:
+        logits = logits.reshape(1, -1)
+
+    # Apply exponential to each logit with numerical stability
+    logits_max = np.max(logits, axis=1, keepdims=True)
+    exp_logits = np.exp(logits - logits_max)  # Subtract max for numerical stability
+
+    # Sum across classes and normalize
+    sum_exp_logits = np.sum(exp_logits, axis=1, keepdims=True)
+    probs = exp_logits / sum_exp_logits
+
+    # Return in the same shape as input
+    if logits.ndim == 1:
+        return probs.reshape(-1)
+    return probs
+
+
+def product_dict(d: dict[str, list[T]]) -> Iterator[dict[str, T]]:
+    """Cartesian product of a dictionary of lists.
+
+    This function takes a dictionary where each value is a list, and returns
+    an iterator over dictionaries where each key is mapped to one element
+    from the corresponding list.
+
+    Parameters:
+        d: A dictionary mapping keys to lists of values.
+
+    Returns:
+        An iterator over dictionaries, each being one element of the cartesian
+        product of the input dictionary.
+
+    Example:
+        >>> list(product_dict({'a': [1, 2], 'b': ['x', 'y']}))
+        [{'a': 1, 'b': 'x'}, {'a': 1, 'b': 'y'}, {'a': 2, 'b': 'x'}, {'a': 2, 'b': 'y'}]
+    """
+    keys = d.keys()
+    values = [d[key] for key in keys]
+    for combination in itertools.product(*values):
+        yield dict(zip(keys, combination, strict=True))
+
+
+# Get the TabPFN models with our wrappers applied
+TabPFNClassifier, TabPFNRegressor = get_tabpfn_models()
