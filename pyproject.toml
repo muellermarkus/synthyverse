@@ -44,6 +44,7 @@ dependencies = [
     "einops",
     "imbalanced-learn",
     "xgb-diffusion",
+    "torchdiffeq>=0.2.5",
 ]
 
 [tool.setuptools]
