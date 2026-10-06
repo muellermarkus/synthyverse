@@ -77,8 +77,9 @@ class TabARGNGenerator(BaseGenerator):
         scheduler_patience: Validation checks before reducing learning rate.
         min_lr_factor: Minimum learning rate as a fraction of the initial learning rate.
         val_size: Fraction of rows reserved for validation and checkpoint selection.
-        val_steps: Epochs between validation checks, or training steps when
-            ``training_steps`` is provided. ``None`` validates once per epoch.
+        val_steps: Optimizer steps between C2ST checks, for both epoch and step
+            training budgets. ``None`` checks once per epoch; non-positive
+            values disable C2ST checks. Cross-entropy is checked once per epoch.
         patience: Number of consecutive non-improving validation checks before early stopping.
         early_stopping_metric: ``"cross_entropy"`` (default) or ``"c2st"`` for
             early stopping and checkpoint selection. LR scheduling always uses
@@ -297,15 +298,13 @@ class TabARGNGenerator(BaseGenerator):
             patience=self.scheduler_patience,
             min_lr=self.min_lr_factor * lr,
         )
-        use_validation = len(val_indices) > 0 and (
+        use_validation = len(val_indices) > 0
+        use_c2st = use_validation and self.early_stopping_metric == "c2st" and (
             self.val_steps is None or self.val_steps > 0
         )
-        validation_interval = self.val_steps or (
-            steps_per_epoch if self.training_steps is not None else 1
-        )
+        validation_interval = self.val_steps or steps_per_epoch
         best_score, bad_checks, best_state = float("inf"), 0, None
         train_time = 0.0
-        timed_out = False
         self.trained_steps_ = 0
         self.trained_epochs_ = 0
         iterator = iter(loader)
@@ -338,81 +337,73 @@ class TabARGNGenerator(BaseGenerator):
             self.trained_steps_ += 1
             train_time += time.monotonic() - step_start_time
 
-        def validate():
+        def validate(metric):
             nonlocal best_score, bad_checks, best_state, last_validation_step
             self.model.eval()
-            with torch.no_grad():
-                losses = []
-                for indices in torch.arange(len(val_indices)).split(batch_size):
-                    data = {
-                        sub: vals[indices].to(self.device)
-                        for sub, vals in val_data.items()
-                    }
-                    logits = self.model(data, fixed_order)
-                    losses.append(
-                        sum(
-                            F.cross_entropy(logits[sub], data[sub], reduction="none")
-                            for sub in names
+            if metric == "cross_entropy":
+                with torch.no_grad():
+                    losses = []
+                    for indices in torch.arange(len(val_indices)).split(batch_size):
+                        data = {
+                            sub: vals[indices].to(self.device)
+                            for sub, vals in val_data.items()
+                        }
+                        logits = self.model(data, fixed_order)
+                        losses.append(
+                            sum(
+                                F.cross_entropy(logits[sub], data[sub], reduction="none")
+                                for sub in names
+                            )
                         )
-                    )
-                val_loss = torch.cat(losses).mean().item()
-            score = (
-                validate_c2st(self, X_val, random_state=self.random_state)
-                if self.early_stopping_metric == "c2st"
-                else val_loss
-            )
+                    score = torch.cat(losses).mean().item()
+                if self.trained_steps_ % steps_per_epoch == 0:
+                    scheduler.step(score)
+            else:
+                score = validate_c2st(self, X_val, random_state=self.random_state)
+            if metric != self.early_stopping_metric:
+                return False
             if score < best_score:
                 best_score, bad_checks = score, 0
                 best_state = cpu_state_dict(self.model, copy=True)
             else:
                 bad_checks += 1
-            scheduler.step(val_loss)
             last_validation_step = self.trained_steps_
             return bad_checks >= self.patience
 
-        if self.training_steps is None:
-            for epoch in tqdm(range(self.epochs), desc="Training", unit="epoch"):
-                for _ in range(steps_per_epoch):
-                    train_step()
-                    if (
-                        self.cap_train_time is not None
-                        and train_time > self.cap_train_time
-                    ):
-                        tqdm.write(
-                            f"Training timed out after {self.cap_train_time} seconds."
-                        )
-                        timed_out = True
-                        break
-                self.trained_epochs_ = epoch + 1
-                if (
-                    use_validation
-                    and self.trained_epochs_ % validation_interval == 0
-                    and validate()
-                ):
-                    break
-                if timed_out:
-                    break
-        else:
-            for _ in tqdm(range(self.training_steps), desc="Training", unit="step"):
+        total_steps = self.training_steps or self.epochs * steps_per_epoch
+        with tqdm(
+            total=self.training_steps or self.epochs,
+            desc="Training",
+            unit="step" if self.training_steps is not None else "epoch",
+        ) as progress:
+            for _ in range(total_steps):
                 train_step()
                 self.trained_epochs_ = int(
                     np.ceil(self.trained_steps_ / steps_per_epoch)
                 )
+                epoch_end = self.trained_steps_ % steps_per_epoch == 0
+                if self.training_steps is not None or epoch_end:
+                    progress.update(1)
+                if use_validation and epoch_end and validate("cross_entropy"):
+                    break
+                if (
+                    use_c2st
+                    and self.trained_steps_ % validation_interval == 0
+                    and validate("c2st")
+                ):
+                    break
                 if self.cap_train_time is not None and train_time > self.cap_train_time:
                     tqdm.write(
                         f"Training timed out after {self.cap_train_time} seconds."
                     )
-                    timed_out = True
-                    break
-                if (
-                    use_validation
-                    and self.trained_steps_ % validation_interval == 0
-                    and validate()
-                ):
                     break
 
-        if use_validation and last_validation_step != self.trained_steps_:
-            validate()
+        if (
+            use_validation
+            and (self.early_stopping_metric == "cross_entropy" or use_c2st)
+            and last_validation_step != self.trained_steps_
+        ):
+            validate(self.early_stopping_metric)
         if best_state is not None:
             self.model.load_state_dict(best_state)
         self.model.eval()
