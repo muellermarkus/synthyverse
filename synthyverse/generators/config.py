@@ -13,6 +13,8 @@ GENERATOR_CLASSES = {
     "tabddpm": ("tabddpm_generator/tabddpm.py", "TabDDPMGenerator"),
     "tabdiff": ("tabdiff_generator/tabdiff.py", "TabDiffGenerator"),
     "tabcascade": ("tabcascade_generator/tabcascade.py", "TabCascadeGenerator"),
+    "tabbyflow": ("tabbyflow_generator/tabbyflow.py", "TabbyFlowGenerator"),
+    "tabpfn": ("tabpfn_generator/tabpfn.py", "TabPFNGenerator"),
     "univariate": ("univariate_generator/univariate.py", "UnivariateGenerator"),
     "smote": ("smote_generator/smote.py", "SMOTEGenerator"),
     "synthpop": ("synthpop_generator/synthpop.py", "SynthpopGenerator"),
@@ -36,31 +38,33 @@ DEFAULT_CONFIG = {
     "max_validation_rows": 30_000,
 }
 
-GENERATOR_DEFAULT_CONFIGS = {
-    "tabsyn": {
-        "vae_training_steps": round(50_000 / 3.5),
-        "training_steps": round(2.5 * 50_000 / 3.5),
-    },
-}
-
 NETWORK_SIZE_CONFIGS = {
     "tabargn": {
-        "small": {"model_size": "S"},
-        "medium": {"model_size": "M"},
-        "large": {"model_size": "L"},
+        "small": {"model_size": "S", "early_stopping_metric": "c2st"},
+        "medium": {"model_size": "M", "early_stopping_metric": "c2st"},
+        "large": {"model_size": "L", "early_stopping_metric": "c2st"},
     },
     "tabsyn": {
         "small": {
+            "num_timesteps": 200,
+            "vae_training_steps": round(DEFAULT_CONFIG["training_steps"] / 3.5),
+            "training_steps": round(2.5 * DEFAULT_CONFIG["training_steps"] / 3.5),
             "embedding_dim": 256,
             "mlp_dim": 256,
             "mlp_layers": 3,
         },
         "medium": {
+            "num_timesteps": 200,
+            "vae_training_steps": round(DEFAULT_CONFIG["training_steps"] / 3.5),
+            "training_steps": round(2.5 * DEFAULT_CONFIG["training_steps"] / 3.5),
             "embedding_dim": 512,
             "mlp_dim": 512,
             "mlp_layers": 4,
         },
         "large": {
+            "num_timesteps": 200,
+            "vae_training_steps": round(DEFAULT_CONFIG["training_steps"] / 3.5),
+            "training_steps": round(2.5 * DEFAULT_CONFIG["training_steps"] / 3.5),
             "embedding_dim": 1024,
             "mlp_dim": 1024,
             "mlp_layers": 4,
@@ -68,23 +72,50 @@ NETWORK_SIZE_CONFIGS = {
     },
     "cdtd": {
         "small": {
+            "num_timesteps": 200,
             "embedding_dim": 256,
             "mlp_n_layers": 3,
             "mlp_n_units": 256,
         },
         "medium": {
+            "num_timesteps": 200,
             "embedding_dim": 512,
             "mlp_n_layers": 4,
             "mlp_n_units": 512,
         },
         "large": {
+            "num_timesteps": 200,
             "embedding_dim": 1024,
             "mlp_n_layers": 4,
             "mlp_n_units": 1024,
         },
     },
+    "tabbyflow": {
+        "small": {
+            "num_timesteps": 200,
+            "num_layers": 0,
+            "embedding_dim": 256,
+            "mlp_dim": 256,
+            "mlp_layers": 3,
+        },
+        "medium": {
+            "num_timesteps": 200,
+            "num_layers": 0,
+            "embedding_dim": 512,
+            "mlp_dim": 512,
+            "mlp_layers": 4,
+        },
+        "large": {
+            "num_timesteps": 200,
+            "num_layers": 0,
+            "embedding_dim": 1024,
+            "mlp_dim": 1024,
+            "mlp_layers": 4,
+        },
+    },
     "tabddpm": {
         "small": {
+            "num_timesteps": 200,
             "embedding_dim": 256,
             "model_params": {
                 "n_layers_hidden": 3,
@@ -93,6 +124,7 @@ NETWORK_SIZE_CONFIGS = {
             },
         },
         "medium": {
+            "num_timesteps": 200,
             "embedding_dim": 512,
             "model_params": {
                 "n_layers_hidden": 4,
@@ -101,6 +133,7 @@ NETWORK_SIZE_CONFIGS = {
             },
         },
         "large": {
+            "num_timesteps": 200,
             "embedding_dim": 1024,
             "model_params": {
                 "n_layers_hidden": 4,
@@ -111,18 +144,21 @@ NETWORK_SIZE_CONFIGS = {
     },
     "tabdiff": {
         "small": {
+            "num_timesteps": 200,
             "num_layers": 0,
             "embedding_dim": 256,
             "mlp_dim": 256,
             "mlp_layers": 3,
         },
         "medium": {
+            "num_timesteps": 200,
             "num_layers": 0,
             "embedding_dim": 512,
             "mlp_dim": 512,
             "mlp_layers": 4,
         },
         "large": {
+            "num_timesteps": 200,
             "num_layers": 0,
             "embedding_dim": 1024,
             "mlp_dim": 1024,
@@ -131,6 +167,7 @@ NETWORK_SIZE_CONFIGS = {
     },
     "tabcascade": {
         "small": {
+            "num_timesteps": 200,
             "embedding_dim": 256,
             "lowres_mlp_n_layers": 3,
             "lowres_mlp_n_units": 256,
@@ -138,6 +175,7 @@ NETWORK_SIZE_CONFIGS = {
             "highres_mlp_n_units": 256,
         },
         "medium": {
+            "num_timesteps": 200,
             "embedding_dim": 512,
             "lowres_mlp_n_layers": 4,
             "lowres_mlp_n_units": 512,
@@ -145,6 +183,7 @@ NETWORK_SIZE_CONFIGS = {
             "highres_mlp_n_units": 512,
         },
         "large": {
+            "num_timesteps": 200,
             "embedding_dim": 1024,
             "lowres_mlp_n_layers": 4,
             "lowres_mlp_n_units": 1024,
@@ -201,7 +240,10 @@ def _update_batch_size(config, n):
     training_rows = n
     if config.get("val_size", 0) > 0 and config.get("val_steps", 0) > 0 and n > 1:
         val_rows = min(ceil(n * config["val_size"]), n - 1)
-        if config.get("max_validation_rows") is not None and config["max_validation_rows"] > 0:
+        if (
+            config.get("max_validation_rows") is not None
+            and config["max_validation_rows"] > 0
+        ):
             val_rows = min(val_rows, config["max_validation_rows"])
         training_rows -= val_rows
 
@@ -272,25 +314,18 @@ def _generator_params(name):
 def get_config(generator: str, n: int, size: Optional[str] = "medium"):
     name = generator.lower()
     params, config = _generator_params(name)
-
-    if size is not None:
-        size = size.lower()
-        if size not in {"small", "medium", "large"}:
-            raise ValueError(f"Config size {size} not found")
-        _update_config(config, NETWORK_SIZE_CONFIGS.get(name, {}).get(size, {}))
+    generator_config = NETWORK_SIZE_CONFIGS.get(name, {})
 
     _update_config(
         config,
         {key: value for key, value in DEFAULT_CONFIG.items() if key in params},
     )
-    _update_config(
-        config,
-        {
-            key: value
-            for key, value in GENERATOR_DEFAULT_CONFIGS.get(name, {}).items()
-            if key in params
-        },
-    )
+
+    if size is not None:
+        size = size.lower()
+        if size not in {"small", "medium", "large"}:
+            raise ValueError(f"Config size {size} not found")
+        _update_config(config, generator_config.get(size, {}))
 
     if "batch_size" in config and name != "tabargn":
         _update_batch_size(config, n)

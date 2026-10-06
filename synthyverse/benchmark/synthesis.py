@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterable, Optional, Union
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
+from synthyverse import evaluation
 from synthyverse.generators import DataProcessor, get_generator
 from synthyverse.utils.utils import memory_guarded
 
@@ -709,8 +710,6 @@ class TabularSynthesisBenchmark:
         set_index: int,
         sampling_seed: int,
     ) -> list[dict[str, Any]]:
-        from synthyverse.evaluation.eval import TabularMetricEvaluator
-
         eval_categorical_features = [
             col for col in self.categorical_features if col in X_train_eval.columns
         ]
@@ -723,7 +722,7 @@ class TabularSynthesisBenchmark:
         ):
             return []
 
-        evaluator = TabularMetricEvaluator(
+        evaluator = evaluation.TabularMetricEvaluator(
             metrics=metrics,
             target_column=self.target_column,
             random_state=sampling_seed,

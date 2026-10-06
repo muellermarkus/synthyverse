@@ -11,7 +11,8 @@ from ..base import BaseGenerator
 from ..dgm_utils import (
     FastTensorDataLoader,
     QuantileStandardScaler,
-    clone_state_dict,
+    cpu_state_dict,
+    load_state_dict,
     split_validation,
     validate_c2st,
 )
@@ -272,7 +273,7 @@ class CDTDGenerator(BaseGenerator):
 
             if score < best_val_score:
                 best_val_score = score
-                best_val_model = clone_state_dict(self.diff_model)
+                best_val_model = cpu_state_dict(self.diff_model, copy=True)
                 bad_val_steps = 0
             else:
                 bad_val_steps += 1
@@ -337,9 +338,7 @@ class CDTDGenerator(BaseGenerator):
         if best_val_model is None:
             ema_diff_model.copy_to()
         else:
-            self.diff_model.load_state_dict(
-                {k: v.to(self.device) for k, v in best_val_model.items()}
-            )
+            self.diff_model.load_state_dict(best_val_model)
         self.diff_model.eval()
         return self
 
@@ -427,7 +426,7 @@ class CDTDGenerator(BaseGenerator):
         }
 
     def _save_extra(self, path: Path) -> None:
-        torch.save(self.diff_model.state_dict(), path / "diff_model.pt")
+        torch.save(cpu_state_dict(self.diff_model), path / "diff_model.pt")
 
     def _load_extra(self, path: Path) -> None:
         self.num_timesteps = getattr(self, "num_timesteps", 200)
@@ -458,6 +457,5 @@ class CDTDGenerator(BaseGenerator):
             timewarp_type=self.timewarp_type,
             timewarp_weight_low_noise=self.timewarp_weight_low_noise,
         ).to(self.device)
-        state_dict = torch.load(path / "diff_model.pt", map_location=self.device)
-        self.diff_model.load_state_dict(state_dict)
+        load_state_dict(self.diff_model, path / "diff_model.pt")
         self.diff_model.eval()

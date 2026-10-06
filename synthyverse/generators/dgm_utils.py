@@ -50,8 +50,17 @@ def validate_c2st(
         return result / n_repeats
 
 
-def clone_state_dict(model):
-    return {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+def cpu_state_dict(model, *, copy=False):
+    """Return CPU weights; copy=True makes an independent training snapshot."""
+    state = model.state_dict()
+    for key, value in state.items():
+        state[key] = value.detach().to("cpu", copy=copy)
+    return state
+
+
+def load_state_dict(model, path):
+    """Copy CPU checkpoint weights directly into the model's current device."""
+    model.load_state_dict(torch.load(path, map_location="cpu", weights_only=True))
 
 
 def split_validation(

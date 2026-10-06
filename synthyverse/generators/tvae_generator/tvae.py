@@ -3,9 +3,10 @@
 from typing import Optional
 
 import pandas as pd
+import torch
 
 from ...utils.utils import resolve_epochs_from_training_steps
-from ..dgm_utils import clone_state_dict, split_validation, validate_c2st
+from ..dgm_utils import cpu_state_dict, load_state_dict, split_validation, validate_c2st
 from .._optional import require_ctgan
 from ..base import BaseGenerator
 
@@ -165,7 +166,7 @@ class TVAEGenerator(BaseGenerator):
             self.model.decoder.train()
             if score < best_val_score:
                 best_val_score = score
-                best_val_model = clone_state_dict(self.model.decoder)
+                best_val_model = cpu_state_dict(self.model.decoder, copy=True)
                 bad_val_steps = 0
             else:
                 bad_val_steps += 1
@@ -192,9 +193,7 @@ class TVAEGenerator(BaseGenerator):
             validate()
 
         if best_val_model is not None:
-            self.model.decoder.load_state_dict(
-                {k: v.to(self.model._device) for k, v in best_val_model.items()}
-            )
+            self.model.decoder.load_state_dict(best_val_model)
         self.model.decoder.eval()
 
         return self
@@ -212,7 +211,11 @@ class TVAEGenerator(BaseGenerator):
 
     def _state(self):
         return {
-            "model": self.model,
+            "model": {
+                key: value
+                for key, value in self.model.__dict__.items()
+                if key not in {"decoder", "_device"}
+            },
             "embedding_dim": self.embedding_dim,
             "compress_dims": self.compress_dims,
             "decompress_dims": self.decompress_dims,
@@ -236,9 +239,26 @@ class TVAEGenerator(BaseGenerator):
     @classmethod
     def _restore_state(cls, state):
         require_ctgan()
+        from .synthesizer import TVAE
+
         generator = cls.__new__(cls)
-        if isinstance(state, dict):
-            generator.__dict__.update(state)
-        else:
-            generator.model = state
+        generator.__dict__.update(state)
+        generator.model = TVAE.__new__(TVAE)
+        generator.model.__dict__.update(state["model"])
         return generator
+
+    def _save_extra(self, path):
+        torch.save(cpu_state_dict(self.model.decoder), path / "model.pt")
+
+    def _load_extra(self, path):
+        from ctgan.synthesizers._utils import _set_device
+        from .synthesizer import Decoder
+
+        self.model._device = _set_device(self.cuda)
+        self.model.decoder = Decoder(
+            self.model.embedding_dim,
+            self.model.decompress_dims,
+            self.model.transformer.output_dimensions,
+        ).to(self.model._device)
+        load_state_dict(self.model.decoder, path / "model.pt")
+        self.model.decoder.eval()

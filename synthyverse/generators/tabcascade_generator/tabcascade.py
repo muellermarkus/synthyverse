@@ -14,7 +14,7 @@ from ..base import BaseGenerator
 from ..dgm_utils import (
     FastTensorDataLoader,
     QuantileStandardScaler,
-    clone_state_dict,
+    cpu_state_dict,
     split_validation,
     validate_c2st,
 )
@@ -365,8 +365,8 @@ class TabCascadeGenerator(BaseGenerator):
             if score < best_val_score:
                 best_val_score = score
                 best_val_model = {
-                    "lowres": clone_state_dict(self.lowres),
-                    "highres": clone_state_dict(self.highres),
+                    "lowres": cpu_state_dict(self.lowres, copy=True),
+                    "highres": cpu_state_dict(self.highres, copy=True),
                 }
                 bad_val_steps = 0
             else:
@@ -495,12 +495,8 @@ class TabCascadeGenerator(BaseGenerator):
             ema_lowres.copy_to()
             ema_highres.copy_to()
         else:
-            self.lowres.load_state_dict(
-                {k: v.to(self.device) for k, v in best_val_model["lowres"].items()}
-            )
-            self.highres.load_state_dict(
-                {k: v.to(self.device) for k, v in best_val_model["highres"].items()}
-            )
+            self.lowres.load_state_dict(best_val_model["lowres"])
+            self.highres.load_state_dict(best_val_model["highres"])
         self.lowres.eval()
         self.highres.eval()
 
@@ -702,8 +698,8 @@ class TabCascadeGenerator(BaseGenerator):
                 "z_stds": self.z_stds,
                 "z_infl_groups": self.z_infl_groups,
                 "z_has_miss": self.z_has_miss,
-                "lowres": self.lowres.state_dict(),
-                "highres": self.highres.state_dict(),
+                "lowres": cpu_state_dict(self.lowres),
+                "highres": cpu_state_dict(self.highres),
             },
             path / "tabcascade.pt",
         )
@@ -711,7 +707,7 @@ class TabCascadeGenerator(BaseGenerator):
     def _load_extra(self, path: Path) -> None:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         state = torch.load(
-            path / "tabcascade.pt", map_location=self.device, weights_only=False
+            path / "tabcascade.pt", map_location="cpu", weights_only=False
         )
         self.n_cat_cols = state["n_cat_cols"]
         self.n_classes = state["n_classes"]

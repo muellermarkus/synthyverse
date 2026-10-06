@@ -277,10 +277,9 @@ try:
             average_before_softmax: bool = False,
             ignore_pretraining_limits: bool = False,
             inference_precision: Literal["autocast", "auto"] = "auto",
-            random_state: int
-            | np.random.RandomState
-            | np.random.Generator
-            | None = None,
+            random_state: (
+                int | np.random.RandomState | np.random.Generator | None
+            ) = None,
             inference_config: dict | None = None,
             paper_version: bool = False,
         ) -> None:
@@ -332,10 +331,9 @@ try:
             average_before_softmax: bool = False,
             ignore_pretraining_limits: bool = False,
             inference_precision: Literal["autocast", "auto"] = "auto",
-            random_state: int
-            | np.random.RandomState
-            | np.random.Generator
-            | None = None,
+            random_state: (
+                int | np.random.RandomState | np.random.Generator | None
+            ) = None,
             inference_config: dict | None = None,
             paper_version: bool = False,
         ) -> None:

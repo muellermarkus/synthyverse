@@ -17,7 +17,8 @@ from ..dgm_utils import (
     FastTensorDataLoader,
     MLPDiffusion,
     QuantileStandardScaler,
-    clone_state_dict,
+    cpu_state_dict,
+    load_state_dict,
     split_validation,
     validate_c2st,
 )
@@ -340,7 +341,7 @@ class TabSynGenerator(BaseGenerator):
             x_val_cat = x_val[self.discrete_features].values
             x_val_cat = torch.from_numpy(x_val_cat).long().to(self.device)
             best_val_loss = float("inf")
-            best_vae = clone_state_dict(vae)
+            best_vae = cpu_state_dict(vae, copy=True)
 
         pbar = tqdm(range(epochs))
 
@@ -398,7 +399,7 @@ class TabSynGenerator(BaseGenerator):
 
                     if val_loss < best_val_loss:
                         best_val_loss = val_loss
-                        best_vae = clone_state_dict(vae)
+                        best_vae = cpu_state_dict(vae, copy=True)
                         patience = 0
                     else:
                         patience += 1
@@ -503,7 +504,7 @@ class TabSynGenerator(BaseGenerator):
             score = validate_c2st(self, X_val, random_state=self.random_state)
             if score < best_val_score:
                 best_val_score = score
-                best_val_model = clone_state_dict(model)
+                best_val_model = cpu_state_dict(model, copy=True)
                 bad_val_steps = 0
             else:
                 bad_val_steps += 1
@@ -652,8 +653,8 @@ class TabSynGenerator(BaseGenerator):
         }
 
     def _save_extra(self, path: Path) -> None:
-        torch.save(self.model.state_dict(), path / "diffusion_model.pt")
-        torch.save(self.pre_decoder.state_dict(), path / "pre_decoder.pt")
+        torch.save(cpu_state_dict(self.model), path / "diffusion_model.pt")
+        torch.save(cpu_state_dict(self.pre_decoder), path / "pre_decoder.pt")
 
     def _load_extra(self, path: Path) -> None:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -671,9 +672,7 @@ class TabSynGenerator(BaseGenerator):
             self.vae_factor,
             bias=True,
         ).to(self.device)
-        self.pre_decoder.load_state_dict(
-            torch.load(path / "pre_decoder.pt", map_location=self.device)
-        )
+        load_state_dict(self.pre_decoder, path / "pre_decoder.pt")
         self.pre_decoder.eval()
 
         denoise_fn = MLPDiffusion(
@@ -685,7 +684,5 @@ class TabSynGenerator(BaseGenerator):
         self.model = Model(denoise_fn=denoise_fn, hid_dim=self.sample_dim).to(
             self.device
         )
-        self.model.load_state_dict(
-            torch.load(path / "diffusion_model.pt", map_location=self.device)
-        )
+        load_state_dict(self.model, path / "diffusion_model.pt")
         self.model.eval()

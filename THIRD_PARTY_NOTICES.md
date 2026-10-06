@@ -46,7 +46,7 @@ The MIT license text for these adapted implementations is kept in
 - Upstream license: MIT License
 - Upstream copyright notice: `Copyright 2024 Minkai Xu`
 - Imported or last compared against: `Commit 5ecdb33`
-- Modifications: `Refactored API, speed-up masked diffusion by vectorizing loops, fast tensor dataloader.`
+- Modifications: `Refactored API, speed-up masked diffusion by vectorizing loops, fast tensor dataloader, use increasing EMA decay.`
 - Upstream NOTICE text, if any: `None`
 
 ### TabCascadeGenerator
@@ -67,6 +67,16 @@ The MIT license text for these adapted implementations is kept in
 - Upstream copyright notice: `Copyright (c) 2026 Layer 6 AI`
 - Imported or last compared against: `Commit 93edb9f`
 - Modifications: `Refactored API, allow storing XGBoost models in-memory.`
+- Upstream NOTICE text, if any: `None`
+
+### TabbyFlowGenerator
+
+- Synthyverse files: `synthyverse/generators/tabbyflow_generator/*`
+- Upstream project: `ForestDiffusion-MO (https://github.com/andresguzco/ef-vfm/)`
+- Upstream license: MIT License
+- Upstream copyright notice: `Copyright 2024 Andrés Guzmán-Cordero`
+- Imported or last compared against: `Commit 11fa189`
+- Modifications: `Refactored API, fast tensor dataloader, switch adaptive sampler to euler sampler, remove option to remove NaN outputs, use increasing EMA decay.`
 - Upstream NOTICE text, if any: `None`
 
 ## Apache-2.0-licensed adapted implementations
@@ -124,6 +134,26 @@ The Apache-2.0 license text for these adapted implementations is kept in
 - Modifications: `Refactor API, fast tensor dataloader.`
 - Upstream NOTICE text, if any: `Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.`
 
+### TabPFNGenerator
+
+- Synthyverse files: `synthyverse/generators/tabpfn_generator/*`
+- Upstream project: `TabPFN (https://github.com/PriorLabs/TabPFN/)`
+- Upstream license: Apache License, Version 2.0
+- Upstream copyright notice: `Copyright (c) 2026 Prior Labs GmbH`
+- Imported or last compared against: `Commit 15f5e6b`
+- Modifications: `None; wrapped API.`
+- Upstream NOTICE text, if any: `TabPFN. Copyright (c) 2026 Prior Labs GmbH. Third-party attribution notices are provided in THIRD-PARTY-NOTICES.md.`
+
+### TabPFN-extensions
+
+- Synthyverse files: `synthyverse/generators/tabpfn_generator/tabpfn_extensions/*`
+- Upstream project: `tabpfn-extensions (https://github.com/priorlabs/tabpfn-extensions)`
+- Upstream license: Apache License, Version 2.0
+- Upstream copyright notice: `Copyright (c) 2026 Prior Labs GmbH`
+- Imported or last compared against: `Commit abcafe3`
+- Modifications: `None.`
+- Upstream NOTICE text, if any: `None`
+
 ### AlphaPrecisionBetaRecall fidelity metric
 
 - Synthyverse files: `synthyverse/evaluation/fidelity.py`
@@ -131,7 +161,7 @@ The Apache-2.0 license text for these adapted implementations is kept in
 - Upstream license: Apache License, Version 2.0
 - Upstream copyright notice: `Copyright vanderschaarlab 2023`
 - Imported or last compared against: `Commit 23f322f`
-- Modifications: `Refactored API, allow manual specification k in Beta-Recall.`
+- Modifications: `Refactored API, allow manual specification k in Beta-Recall, and use Gower distance.`
 - Upstream NOTICE text, if any: `None`
 
 

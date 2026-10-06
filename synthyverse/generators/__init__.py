@@ -1,16 +1,16 @@
 from importlib import import_module
 
-from .base import (
-    BaseGenerator,
-    ConstraintEnforcer,
-    DataProcessor,
-    SynthyverseGenerator,
-    TabularImputer,
-    TabularSchema,
-)
 from ._optional import has_ctgan, has_tabpfn, require_ctgan, require_tabpfn
 
-from .config import get_config
+_EXPORTS = {
+    "BaseGenerator": ".base",
+    "ConstraintEnforcer": ".base",
+    "DataProcessor": ".base",
+    "SynthyverseGenerator": ".base",
+    "TabularImputer": ".base",
+    "TabularSchema": ".base",
+    "get_config": ".config",
+}
 
 _BASE_GENERATORS = {
     "ARFGenerator": (".arf_generator", "arf"),
@@ -60,6 +60,12 @@ def _require_optional(class_name: str) -> None:
 
 
 def __getattr__(name: str):
+    if name in globals():
+        return globals()[name]
+    if name in _EXPORTS:
+        value = getattr(import_module(_EXPORTS[name], __name__), name)
+        globals()[name] = value
+        return value
     if name == "all_generators":
         all_generators = [__getattr__(cls) for cls in _available_generators()]
         globals()[name] = all_generators
@@ -78,17 +84,11 @@ def get_generator(generator_name: str):
     class_name = _GENERATOR_BY_NAME.get(generator_name)
     if class_name is None:
         raise ValueError(f"Generator {generator_name} not found")
-    _require_optional(class_name)
     return __getattr__(class_name)
 
 
 __all__ = [
-    "BaseGenerator",
-    "ConstraintEnforcer",
-    "DataProcessor",
-    "SynthyverseGenerator",
-    "TabularImputer",
-    "TabularSchema",
+    *_EXPORTS,
     *list(_available_generators()),
     "all_generators",
     "get_generator",

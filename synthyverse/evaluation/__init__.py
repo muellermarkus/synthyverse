@@ -24,6 +24,8 @@ _METRIC_BY_NAME = {name: cls for cls, (_, name) in _METRICS.items()}
 
 
 def __getattr__(name: str):
+    if name in globals():
+        return globals()[name]
     if name == "BaseMetric":
         base = import_module(".base", __name__).BaseMetric
         globals()[name] = base

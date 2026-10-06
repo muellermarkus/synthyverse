@@ -4,10 +4,11 @@ import math
 from typing import Optional
 
 import pandas as pd
+import torch
 
 from .._optional import require_ctgan
 from ..base import BaseGenerator
-from ..dgm_utils import clone_state_dict, split_validation, validate_c2st
+from ..dgm_utils import cpu_state_dict, load_state_dict, split_validation, validate_c2st
 from ...utils.utils import resolve_epochs_from_training_steps
 
 
@@ -191,7 +192,7 @@ class CTGANGenerator(BaseGenerator):
             self.model._generator.train()
             if score < best_val_score:
                 best_val_score = score
-                best_val_model = clone_state_dict(self.model._generator)
+                best_val_model = cpu_state_dict(self.model._generator, copy=True)
                 bad_val_steps = 0
             else:
                 bad_val_steps += 1
@@ -218,9 +219,7 @@ class CTGANGenerator(BaseGenerator):
             validate()
 
         if best_val_model is not None:
-            self.model._generator.load_state_dict(
-                {k: v.to(self.model._device) for k, v in best_val_model.items()}
-            )
+            self.model._generator.load_state_dict(best_val_model)
         self.model._generator.eval()
 
         return self
@@ -238,7 +237,11 @@ class CTGANGenerator(BaseGenerator):
 
     def _state(self):
         return {
-            "model": self.model,
+            "model": {
+                key: value
+                for key, value in self.model.__dict__.items()
+                if key not in {"_generator", "_device"}
+            },
             "epochs": self.epochs,
             "training_steps": self.training_steps,
             "batch_size": self.batch_size,
@@ -272,9 +275,26 @@ class CTGANGenerator(BaseGenerator):
     @classmethod
     def _restore_state(cls, state):
         require_ctgan()
+        from .synthesizer import CTGAN
+
         generator = cls.__new__(cls)
-        if isinstance(state, dict):
-            generator.__dict__.update(state)
-        else:
-            generator.model = state
+        generator.__dict__.update(state)
+        generator.model = CTGAN.__new__(CTGAN)
+        generator.model.__dict__.update(state["model"])
         return generator
+
+    def _save_extra(self, path):
+        torch.save(cpu_state_dict(self.model._generator), path / "model.pt")
+
+    def _load_extra(self, path):
+        from ctgan.synthesizers._utils import _set_device
+        from .synthesizer import Generator
+
+        self.model._device = _set_device(self.cuda)
+        self.model._generator = Generator(
+            self.model._embedding_dim + self.model._data_sampler.dim_cond_vec(),
+            self.model._generator_dim,
+            self.model._transformer.output_dimensions,
+        ).to(self.model._device)
+        load_state_dict(self.model._generator, path / "model.pt")
+        self.model._generator.eval()

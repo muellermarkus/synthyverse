@@ -8,21 +8,31 @@ from torchdiffeq import odeint_adjoint as odeint
 
 class ExpVFM(torch.nn.Module):
     def __init__(
-            self,
-            num_classes: np.ndarray,
-            num_numerical_features: int,
-            vf_fn,
-            device=torch.device('cpu'),
-            **kwargs
-        ):
+        self,
+        num_classes: np.ndarray,
+        num_numerical_features: int,
+        vf_fn,
+        device=torch.device("cpu"),
+        num_timesteps=200,
+        **kwargs,
+    ):
 
         super(ExpVFM, self).__init__()
 
         self.num_numerical_features = num_numerical_features
-        self.num_classes = num_classes # it as a vector [K1, K2, ..., Km]
-        self.num_classes_expanded = torch.from_numpy(
-            np.concatenate([self.num_classes[i].repeat(self.num_classes[i]) for i in range(len(self.num_classes))])
-        ).to(device) if len(self.num_classes)>0 else torch.tensor([]).to(device).int()
+        self.num_classes = num_classes  # it as a vector [K1, K2, ..., Km]
+        self.num_classes_expanded = (
+            torch.from_numpy(
+                np.concatenate(
+                    [
+                        self.num_classes[i].repeat(self.num_classes[i])
+                        for i in range(len(self.num_classes))
+                    ]
+                )
+            ).to(device)
+            if len(self.num_classes) > 0
+            else torch.tensor([]).to(device).int()
+        )
         self.neg_infinity = -1000000.0
 
         offsets = np.cumsum(self.num_classes)
@@ -34,14 +44,14 @@ class ExpVFM(torch.nn.Module):
 
         self._vf_fn = vf_fn
         self.device = device
-
+        self.num_timesteps = num_timesteps
 
     def mixed_loss(self, x):
         b = x.shape[0]
         dev = x.device
 
-        x_num = x[:, :self.num_numerical_features]
-        x_cat = x[:, self.num_numerical_features:].long()
+        x_num = x[:, : self.num_numerical_features]
+        x_cat = x[:, self.num_numerical_features :].long()
 
         t = torch.rand(b, device=dev, dtype=x_num.dtype)
         t = t[:, None]
@@ -50,7 +60,7 @@ class ExpVFM(torch.nn.Module):
         x_num_t = x_num
         if x_num.shape[1] > 0:
             noise = torch.randn_like(x_num)
-            x_num_t = t * x_num + (1 - t) * noise # + noise * sigma_num
+            x_num_t = t * x_num + (1 - t) * noise  # + noise * sigma_num
 
         # Discrete interpolation
         x_cat_oh = self.to_one_hot(x_cat).float()
@@ -95,18 +105,30 @@ class ExpVFM(torch.nn.Module):
         t = torch.tensor([0.0, 0.999]).to(dev)
         vf = Velocity(self._vf_fn)
         # we substitute "euler" for the original "dopri5" to keep method comparable in terms of sampling
-        trajectory = odeint(vf, x0, t, method="euler", rtol=1e-5, atol=1e-5)
+        trajectory = odeint(
+            vf,
+            x0,
+            t,
+            method="euler",
+            options={"step_size": t[-1].item() / self.num_timesteps},
+            rtol=1e-5,
+            atol=1e-5,
+        )
         out = trajectory[1]
 
         sample = torch.zeros(num_samples, d_out, device=dev, dtype=dt)
-        sample[:, :self.num_numerical_features] = out[:, :self.num_numerical_features].to(torch.float32)
+        sample[:, : self.num_numerical_features] = out[
+            :, : self.num_numerical_features
+        ].to(torch.float32)
         if sum(self.num_classes) != 0:
             idx = self.num_numerical_features
             for i, val in enumerate(self.num_classes):
                 col = self.num_numerical_features + i
-                sample[:, col] = torch.argmax(out[:, idx:idx + val], dim=1)
+                sample[:, col] = torch.argmax(out[:, idx : idx + val], dim=1)
                 idx += val
-                assert val >= sample[:, col].max() >= 0, f"Sampled value {sample[:, col].max()} is out of range for categorical feature {i} with {val} classes."
+                assert (
+                    val >= sample[:, col].max() >= 0
+                ), f"Sampled value {sample[:, col].max()} is out of range for categorical feature {i} with {val} classes."
 
         return sample.cpu()
 
@@ -137,19 +159,24 @@ class ExpVFM(torch.nn.Module):
         if len(self.num_classes) == 0:
             return torch.zeros(x_cat.shape[0], 0, device=x_cat.device, dtype=torch.long)
         x_cat_oh = torch.cat(
-            [F.one_hot(x_cat[:, i], num_classes=self.num_classes[i]) for i in range(len(self.num_classes))],
-            dim=-1
+            [
+                F.one_hot(x_cat[:, i], num_classes=self.num_classes[i])
+                for i in range(len(self.num_classes))
+            ],
+            dim=-1,
         )
         return x_cat_oh
 
-    def _absorbed_closs(self, model_output, x0, cats): #, sigma, dsigma):
+    def _absorbed_closs(self, model_output, x0, cats):  # , sigma, dsigma):
         """
-            alpha: (bs,)
+        alpha: (bs,)
         """
-        cum_sum =0
+        cum_sum = 0
         losses = torch.zeros(len(cats), device=model_output.device)
         for i, val in enumerate(cats):
-            dist = torch.distributions.Categorical(logits=model_output[:, cum_sum:cum_sum+val])
+            dist = torch.distributions.Categorical(
+                logits=model_output[:, cum_sum : cum_sum + val]
+            )
             losses[i] = -dist.log_prob(x0[:, i]).mean()
             cum_sum += val
 
@@ -165,8 +192,8 @@ class Velocity(torch.nn.Module):
     def forward(self, t, x):
         t = t * torch.ones(x.shape[0]).to(x.device)
 
-        x_num = x[:, :self.model.d_numerical]
-        x_cat = x[:, self.model.d_numerical:]
+        x_num = x[:, : self.model.d_numerical]
+        x_cat = x[:, self.model.d_numerical :]
         mu, logits = self.model(x_num, x_cat, t)
 
         # Numerical velocity
@@ -181,8 +208,8 @@ class Velocity(torch.nn.Module):
             logit_idx = 0
             oh_idx = 0
             for k in self.model.categories:
-                probs_k = F.softmax(logits[:, logit_idx:logit_idx + k], dim=-1)
-                x_k = x_cat[:, oh_idx:oh_idx + k]
+                probs_k = F.softmax(logits[:, logit_idx : logit_idx + k], dim=-1)
+                x_k = x_cat[:, oh_idx : oh_idx + k]
                 v_k = (probs_k - (1 - 0.01) * x_k) / (1 - (1 - 0.01) * t.unsqueeze(1))
                 v_cat_parts.append(v_k)
                 logit_idx += k

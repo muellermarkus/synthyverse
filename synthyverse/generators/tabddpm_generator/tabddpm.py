@@ -14,7 +14,8 @@ from ..base import BaseGenerator
 from ..dgm_utils import (
     FastTensorDataLoader,
     QuantileStandardScaler,
-    clone_state_dict,
+    cpu_state_dict,
+    load_state_dict,
     split_validation,
     validate_c2st,
 )
@@ -285,7 +286,7 @@ class TabDDPMGenerator(BaseGenerator):
             score = validate_c2st(self, X_val, random_state=self.random_state)
             if score < best_val_score:
                 best_val_score = score
-                best_val_model = clone_state_dict(self.diffusion)
+                best_val_model = cpu_state_dict(self.diffusion, copy=True)
                 bad_val_steps = 0
             else:
                 bad_val_steps += 1
@@ -359,9 +360,7 @@ class TabDDPMGenerator(BaseGenerator):
         if timed_out and use_validation:
             validate()
         if best_val_model is not None:
-            self.diffusion.load_state_dict(
-                {k: v.to(self.device) for k, v in best_val_model.items()}
-            )
+            self.diffusion.load_state_dict(best_val_model)
         self.diffusion.eval()
         self.loss_history = pd.DataFrame(
             self.loss_history, columns=["step", "mloss", "gloss", "loss"]
@@ -422,7 +421,17 @@ class TabDDPMGenerator(BaseGenerator):
             "quantile_transformers": self.quantile_transformers,
             "ordinal_encoder": self.ordinal_encoder,
             "feature_names_out": self.feature_names_out,
-            "diffusion": self.diffusion,
+            "diffusion_config": {
+                "model_params": self.model_params,
+                "num_categorical_features": self.diffusion.num_classes,
+                "num_numerical_features": self.diffusion.num_numerics,
+                "gaussian_loss_type": self.gaussian_loss_type,
+                "num_timesteps": self.num_timesteps,
+                "num_classes": self.n_classes,
+                "conditional": self.is_conditional,
+                "dim_emb": self.embedding_dim,
+                "scheduler": self.scheduler,
+            },
             "trained_steps_": self.trained_steps_,
             "trained_epochs_": self.trained_epochs_,
         }
@@ -437,7 +446,13 @@ class TabDDPMGenerator(BaseGenerator):
             )
         return state
 
+    def _save_extra(self, path: Path) -> None:
+        torch.save(cpu_state_dict(self.diffusion), path / "diffusion.pt")
+
     def _load_extra(self, path: Path) -> None:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.diffusion.to(self.device)
+        self.diffusion = GaussianMultinomialDiffusion(
+            **self.diffusion_config, device=self.device
+        ).to(self.device)
+        load_state_dict(self.diffusion, path / "diffusion.pt")
         self.diffusion.eval()

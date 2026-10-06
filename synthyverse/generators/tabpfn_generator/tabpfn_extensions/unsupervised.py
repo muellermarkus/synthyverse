@@ -417,9 +417,11 @@ class TabPFNUnsupervisedModel(BaseEstimator):
                 ].average_bar_distributions_into_this(
                     [d["criterion"] for d in densities],
                     [
-                        d["logits"].clone().detach()
-                        if torch.is_tensor(d["logits"])
-                        else torch.tensor(d["logits"])
+                        (
+                            d["logits"].clone().detach()
+                            if torch.is_tensor(d["logits"])
+                            else torch.tensor(d["logits"])
+                        )
                         for d in densities
                     ],
                 )
@@ -728,6 +730,7 @@ class TabPFNUnsupervisedModel(BaseEstimator):
             fast_mode=fast_mode,
         )
 
+
 def efficient_random_permutation(
     indices: list[int],
     n_permutations: int = 10,
@@ -752,6 +755,7 @@ def efficient_random_permutation(
         n_iter += 1
 
     return perms
+
 
 def efficient_random_permutation_(indices: list[int]) -> tuple[int, ...]:
     """Generate a single random permutation from the given indices.

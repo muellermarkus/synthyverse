@@ -1,7 +1,6 @@
 # Third-party notice: based on MIT-licensed upstream code.
 # See THIRD_PARTY_NOTICES.md for attribution and modification details.
 import time
-from copy import deepcopy
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -9,6 +8,7 @@ import numpy as np
 import pandas as pd
 import torch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch_ema import ExponentialMovingAverage
 from tqdm import tqdm
 
 from ..base import BaseGenerator
@@ -19,7 +19,7 @@ from ...utils.utils import (
 from ..dgm_utils import (
     FastTensorDataLoader,
     QuantileStandardScaler,
-    clone_state_dict,
+    cpu_state_dict,
     split_validation,
     validate_c2st,
 )
@@ -29,11 +29,6 @@ from .modules import Model, UniModMLP
 LRScheduler = Literal["reduce_lr_on_plateau", "anneal", "fixed"]
 CLossWeightSchedule = Literal["anneal", "fixed"]
 NetConditioning = Literal["sigma", "t"]
-
-
-def update_ema(target_params, source_params, rate):
-    for target, source in zip(target_params, source_params):
-        target.detach().mul_(rate).add_(source.detach(), alpha=1 - rate)
 
 
 class TabDiffGenerator(BaseGenerator):
@@ -288,12 +283,10 @@ class TabDiffGenerator(BaseGenerator):
         scheduler = ReduceLROnPlateau(
             optimizer, mode="min", factor=self.factor, patience=self.reduce_lr_patience
         )
-        ema_model = deepcopy(self.diffusion._denoise_fn)
-        ema_num_schedule = deepcopy(self.diffusion.num_schedule)
-        ema_cat_schedule = deepcopy(self.diffusion.cat_schedule)
-        for model in [ema_model, ema_num_schedule, ema_cat_schedule]:
-            for param in model.parameters():
-                param.detach_()
+        ema_diff_model = ExponentialMovingAverage(
+            self.diffusion.parameters(),
+            decay=self.ema_decay,  # use_num_updates=False
+        )
 
         best_val_score = float("inf")
         best_val_model = None
@@ -303,13 +296,17 @@ class TabDiffGenerator(BaseGenerator):
         def validate():
             nonlocal best_val_score, best_val_model, bad_val_steps
             self.diffusion.eval()
+            ema_diff_model.store()
+            ema_diff_model.copy_to()
             score = validate_c2st(self, X_val, random_state=self.random_state)
             if score < best_val_score:
                 best_val_score = score
-                best_val_model = clone_state_dict(self.diffusion)
+                best_val_model = cpu_state_dict(self.diffusion, copy=True)
                 bad_val_steps = 0
             else:
                 bad_val_steps += 1
+            ema_diff_model.restore()
+            self.diffusion.train()
             return bad_val_steps >= self.patience
 
         train_time = 0.0
@@ -335,6 +332,8 @@ class TabDiffGenerator(BaseGenerator):
                 loss = self.d_lambda * dloss + closs_weight * closs
                 loss.backward()
                 optimizer.step()
+                if self.training_steps is not None:
+                    ema_diff_model.update()
                 dloss_sum += dloss.item() * len(batch)
                 closs_sum += closs.item() * len(batch)
                 n_obs += len(batch)
@@ -355,7 +354,6 @@ class TabDiffGenerator(BaseGenerator):
                     if validate():
                         stop_training = True
                         break
-                    self.diffusion.train()
 
             if n_obs == 0:
                 raise ValueError(
@@ -376,21 +374,8 @@ class TabDiffGenerator(BaseGenerator):
                 raise NotImplementedError(self.lr_scheduler)
 
             self.trained_epochs_ = epoch + 1
-            update_ema(
-                ema_model.parameters(),
-                self.diffusion._denoise_fn.parameters(),
-                self.ema_decay,
-            )
-            update_ema(
-                ema_num_schedule.parameters(),
-                self.diffusion.num_schedule.parameters(),
-                self.ema_decay,
-            )
-            update_ema(
-                ema_cat_schedule.parameters(),
-                self.diffusion.cat_schedule.parameters(),
-                self.ema_decay,
-            )
+            if self.training_steps is None:
+                ema_diff_model.update()
             if timed_out or stop_training:
                 break
 
@@ -408,13 +393,9 @@ class TabDiffGenerator(BaseGenerator):
             validate()
 
         if best_val_model is None:
-            self.diffusion._denoise_fn = ema_model
-            self.diffusion.num_schedule = ema_num_schedule
-            self.diffusion.cat_schedule = ema_cat_schedule
+            ema_diff_model.copy_to()
         else:
-            self.diffusion.load_state_dict(
-                {k: v.to(self.device) for k, v in best_val_model.items()}
-            )
+            self.diffusion.load_state_dict(best_val_model)
         self.diffusion.eval()
         return self
 
@@ -565,9 +546,9 @@ class TabDiffGenerator(BaseGenerator):
     def _save_extra(self, path: Path) -> None:
         torch.save(
             {
-                "denoise_fn": self.diffusion._denoise_fn.state_dict(),
-                "num_schedule": self.diffusion.num_schedule.state_dict(),
-                "cat_schedule": self.diffusion.cat_schedule.state_dict(),
+                "denoise_fn": cpu_state_dict(self.diffusion._denoise_fn),
+                "num_schedule": cpu_state_dict(self.diffusion.num_schedule),
+                "cat_schedule": cpu_state_dict(self.diffusion.cat_schedule),
             },
             path / "diffusion.pt",
         )
@@ -575,7 +556,7 @@ class TabDiffGenerator(BaseGenerator):
     def _load_extra(self, path: Path) -> None:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.diffusion = self._make_diffusion().to(self.device)
-        state = torch.load(path / "diffusion.pt", map_location=self.device)
+        state = torch.load(path / "diffusion.pt", map_location="cpu", weights_only=True)
         self.diffusion._denoise_fn.load_state_dict(state["denoise_fn"])
         self.diffusion.num_schedule.load_state_dict(state["num_schedule"])
         self.diffusion.cat_schedule.load_state_dict(state["cat_schedule"])

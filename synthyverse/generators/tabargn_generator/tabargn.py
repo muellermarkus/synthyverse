@@ -13,7 +13,13 @@ from torch.nn import functional as F
 from tqdm import tqdm
 
 from ..base import BaseGenerator
-from ..dgm_utils import FastTensorDataLoader, split_validation
+from ..dgm_utils import (
+    FastTensorDataLoader,
+    cpu_state_dict,
+    load_state_dict,
+    split_validation,
+    validate_c2st,
+)
 from .encoding import ColumnEncoder
 from .model import FlatModel
 
@@ -70,10 +76,13 @@ class TabARGNGenerator(BaseGenerator):
         scheduler_factor: Multiplicative LR reduction factor after validation plateaus.
         scheduler_patience: Validation checks before reducing learning rate.
         min_lr_factor: Minimum learning rate as a fraction of the initial learning rate.
-        val_size: Fraction of rows reserved for validation-loss checkpoint selection.
+        val_size: Fraction of rows reserved for validation and checkpoint selection.
         val_steps: Epochs between validation checks, or training steps when
             ``training_steps`` is provided. ``None`` validates once per epoch.
         patience: Number of consecutive non-improving validation checks before early stopping.
+        early_stopping_metric: ``"cross_entropy"`` (default) or ``"c2st"`` for
+            early stopping and checkpoint selection. LR scheduling always uses
+            validation cross-entropy.
         max_validation_rows: Maximum rows reserved for validation. Negative values remove the cap.
         enable_flexible_generation: Train with a random column order per batch.
         random_generation_order: Generate each batch with a random column order.
@@ -116,7 +125,8 @@ class TabARGNGenerator(BaseGenerator):
         val_size: float = 0.2,
         val_steps: Optional[int] = None,
         patience: int = 5,
-        max_validation_rows: Optional[int] = 30_000,
+        early_stopping_metric: str = "cross_entropy",
+        max_validation_rows: Optional[int] = -1,
         enable_flexible_generation: bool = True,
         random_generation_order: bool = False,
         target_column: Optional[str] = None,
@@ -159,6 +169,7 @@ class TabARGNGenerator(BaseGenerator):
         self.val_size = val_size
         self.val_steps = val_steps
         self.patience = patience
+        self.early_stopping_metric = early_stopping_metric
         self.max_validation_rows = max_validation_rows
         self.enable_flexible_generation = enable_flexible_generation
         self.random_generation_order = random_generation_order
@@ -180,6 +191,8 @@ class TabARGNGenerator(BaseGenerator):
             raise ValueError("epochs must be a positive integer.")
         if self.patience < 1:
             raise ValueError("patience must be at least 1.")
+        if self.early_stopping_metric not in {"cross_entropy", "c2st"}:
+            raise ValueError("early_stopping_metric must be 'cross_entropy' or 'c2st'.")
         if self.max_validation_rows == 0:
             raise ValueError("max_validation_rows must be nonzero.")
         if len(self.regressor_layer_units) == 0:
@@ -290,7 +303,7 @@ class TabARGNGenerator(BaseGenerator):
         validation_interval = self.val_steps or (
             steps_per_epoch if self.training_steps is not None else 1
         )
-        best_loss, bad_checks, best_state = float("inf"), 0, None
+        best_score, bad_checks, best_state = float("inf"), 0, None
         train_time = 0.0
         timed_out = False
         self.trained_steps_ = 0
@@ -326,7 +339,7 @@ class TabARGNGenerator(BaseGenerator):
             train_time += time.monotonic() - step_start_time
 
         def validate():
-            nonlocal best_loss, bad_checks, best_state, last_validation_step
+            nonlocal best_score, bad_checks, best_state, last_validation_step
             self.model.eval()
             with torch.no_grad():
                 losses = []
@@ -343,12 +356,14 @@ class TabARGNGenerator(BaseGenerator):
                         )
                     )
                 val_loss = torch.cat(losses).mean().item()
-            if val_loss < best_loss:
-                best_loss, bad_checks = val_loss, 0
-                best_state = {
-                    key: value.detach().cpu().clone()
-                    for key, value in self.model.state_dict().items()
-                }
+            score = (
+                validate_c2st(self, X_val, random_state=self.random_state)
+                if self.early_stopping_metric == "c2st"
+                else val_loss
+            )
+            if score < best_score:
+                best_score, bad_checks = score, 0
+                best_state = cpu_state_dict(self.model, copy=True)
             else:
                 bad_checks += 1
             scheduler.step(val_loss)
@@ -460,7 +475,7 @@ class TabARGNGenerator(BaseGenerator):
         }
 
     def _save_extra(self, path: Path) -> None:
-        torch.save(self.model.state_dict(), path / "model.pt")
+        torch.save(cpu_state_dict(self.model), path / "model.pt")
 
     def _load_extra(self, path: Path) -> None:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -478,7 +493,5 @@ class TabARGNGenerator(BaseGenerator):
             self.regressor_layer_units,
             self.dropout,
         )
-        self.model.load_state_dict(
-            torch.load(path / "model.pt", map_location=self.device, weights_only=True)
-        )
+        load_state_dict(self.model, path / "model.pt")
         self.model.eval()
