@@ -32,7 +32,7 @@ GENERATOR_CLASSES = {
 DEFAULT_CONFIG = {
     "batch_size": 4096,
     "training_steps": 50_000,
-    "val_size": (1 / 0.9) - 1,  # effective 8:1:1 split
+    "val_size": 1 / 9,  # effective 8:1:1 split
     "val_steps": 5_000,
     "patience": 3,
     "max_validation_rows": 30_000,
