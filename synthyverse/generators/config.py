@@ -32,7 +32,7 @@ GENERATOR_CLASSES = {
 DEFAULT_CONFIG = {
     "batch_size": 4096,
     "training_steps": 50_000,
-    "val_size": 0.2,
+    "val_size": (1 / 0.9) - 1,  # effective 8:1:1 split
     "val_steps": 5_000,
     "patience": 3,
     "max_validation_rows": 30_000,
@@ -169,6 +169,7 @@ NETWORK_SIZE_CONFIGS = {
         "small": {
             "num_timesteps": 200,
             "embedding_dim": 256,
+            "conditional_generation": False,
             "model_params": {
                 "n_layers_hidden": 3,
                 "n_units_hidden": 256,
@@ -178,6 +179,7 @@ NETWORK_SIZE_CONFIGS = {
         "medium": {
             "num_timesteps": 200,
             "embedding_dim": 512,
+            "conditional_generation": False,
             "model_params": {
                 "n_layers_hidden": 4,
                 "n_units_hidden": 512,
@@ -187,6 +189,7 @@ NETWORK_SIZE_CONFIGS = {
         "large": {
             "num_timesteps": 200,
             "embedding_dim": 1024,
+            "conditional_generation": False,
             "model_params": {
                 "n_layers_hidden": 4,
                 "n_units_hidden": 1024,
