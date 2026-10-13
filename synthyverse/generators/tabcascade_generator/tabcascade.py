@@ -347,7 +347,7 @@ class TabCascadeGenerator(BaseGenerator):
         lowres_loss_trn = highres_loss_trn = 0
         pbar = tqdm(total=self.config.lowres.training.num_steps_train)
 
-        train_time = 0.0
+        train_time = self.net_training_time_ = 0.0
         best_val_score = float("inf")
         best_val_model = None
         bad_val_steps = 0
@@ -475,6 +475,7 @@ class TabCascadeGenerator(BaseGenerator):
             pbar.update(1)
 
             train_time += time.monotonic() - step_start_time
+            self.net_training_time_ = train_time
             if self.cap_train_time is not None and train_time > self.cap_train_time:
                 print(f"Training timed out after {self.cap_train_time} seconds.")
                 timed_out = True

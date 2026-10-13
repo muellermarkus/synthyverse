@@ -294,7 +294,7 @@ class TabDDPMGenerator(BaseGenerator):
                 bad_val_steps += 1
             return bad_val_steps >= self.patience
 
-        train_time = 0.0
+        train_time = self.net_training_time_ = 0.0
         timed_out = False
         stop_training = False
         self.trained_steps_ = 0
@@ -330,6 +330,7 @@ class TabDDPMGenerator(BaseGenerator):
                     curr_loss_multi = curr_loss_gauss = 0.0
 
                 train_time += time.monotonic() - step_start_time
+                self.net_training_time_ = train_time
                 if self.cap_train_time is not None and train_time > self.cap_train_time:
                     print(f"Training timed out after {self.cap_train_time} seconds.")
                     timed_out = True

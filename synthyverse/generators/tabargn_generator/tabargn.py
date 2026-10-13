@@ -309,7 +309,7 @@ class TabARGNGenerator(BaseGenerator):
         )
         validation_interval = self.val_steps or steps_per_epoch
         best_score, bad_checks, best_state = float("inf"), 0, None
-        train_time = 0.0
+        train_time = self.net_training_time_ = 0.0
         self.trained_steps_ = 0
         self.trained_epochs_ = 0
         fixed_order = (
@@ -336,6 +336,7 @@ class TabARGNGenerator(BaseGenerator):
             optimizer.step()
             self.trained_steps_ += 1
             train_time += time.monotonic() - step_start_time
+            self.net_training_time_ = train_time
 
         def validate(metric):
             nonlocal best_score, bad_checks, best_state, last_validation_step

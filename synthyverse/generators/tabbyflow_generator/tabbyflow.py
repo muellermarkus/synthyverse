@@ -299,7 +299,7 @@ class TabbyFlowGenerator(BaseGenerator):
                 self.flow.train()
             return bad_val_steps >= self.patience
 
-        train_time = 0.0
+        train_time = self.net_training_time_ = 0.0
         timed_out = stop_training = False
         self.trained_steps_ = 0
         self.trained_epochs_ = 0
@@ -349,6 +349,7 @@ class TabbyFlowGenerator(BaseGenerator):
                 )
                 self.trained_steps_ += 1
                 train_time += time.monotonic() - step_start_time
+                self.net_training_time_ = train_time
                 if self.cap_train_time is not None and train_time > self.cap_train_time:
                     print(f"Training timed out after {self.cap_train_time} seconds.")
                     timed_out = True

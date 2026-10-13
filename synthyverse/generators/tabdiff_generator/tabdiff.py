@@ -310,7 +310,7 @@ class TabDiffGenerator(BaseGenerator):
             self.diffusion.train()
             return bad_val_steps >= self.patience
 
-        train_time = 0.0
+        train_time = self.net_training_time_ = 0.0
         timed_out = False
         stop_training = False
         step = 0
@@ -341,6 +341,7 @@ class TabDiffGenerator(BaseGenerator):
                 step += 1
                 self.trained_steps_ = step
                 train_time += time.monotonic() - step_start_time
+                self.net_training_time_ = train_time
                 if self.cap_train_time is not None and train_time > self.cap_train_time:
                     print(f"Training timed out after {self.cap_train_time} seconds.")
                     timed_out = True

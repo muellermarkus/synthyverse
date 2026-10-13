@@ -424,7 +424,7 @@ class CTGAN(BaseSynthesizer):
             epoch_iterator.set_description(description.format(gen=0, dis=0))
 
         steps_per_epoch = max(len(train_data) // self._batch_size, 1)
-        train_time = 0.0
+        train_time = self.net_training_time_ = 0.0
         step = 0
         timed_out = False
         self.timed_out_ = False
@@ -513,6 +513,7 @@ class CTGAN(BaseSynthesizer):
                 step += 1
                 self.trained_steps_ = step
                 train_time += time.monotonic() - step_start_time
+                self.net_training_time_ = train_time
                 if (
                     self.cap_train_time is not None
                     and train_time > self.cap_train_time

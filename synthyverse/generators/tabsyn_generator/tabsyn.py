@@ -345,7 +345,7 @@ class TabSynGenerator(BaseGenerator):
 
         pbar = tqdm(range(epochs))
 
-        start_time = time.monotonic()
+        train_time = self.net_training_time_ = 0.0
         timed_out = False
         step = 0
         self.vae_trained_steps_ = 0
@@ -353,6 +353,7 @@ class TabSynGenerator(BaseGenerator):
         for epoch in pbar:
             vae.train()
             for batch_num, batch_cat in train_loader:
+                step_start_time = time.monotonic()
                 batch_num = batch_num.to(self.device)
                 batch_cat = batch_cat.to(self.device)
 
@@ -369,7 +370,9 @@ class TabSynGenerator(BaseGenerator):
                 optimizer.step()
                 step += 1
                 self.vae_trained_steps_ = step
-                if time_cap is not None and time.monotonic() - start_time > time_cap:
+                train_time += time.monotonic() - step_start_time
+                self.net_training_time_ = train_time
+                if time_cap is not None and train_time > time_cap:
                     print(f"Training timed out after {time_cap} seconds.")
                     timed_out = True
                     break
@@ -410,7 +413,7 @@ class TabSynGenerator(BaseGenerator):
         if use_validation:
             vae.load_state_dict(best_vae)
         vae.eval()
-        return vae, time.monotonic() - start_time
+        return vae, train_time
 
     def _encode_vae(self, vae, x):
         pre_encoder = Encoder_model(
@@ -510,6 +513,7 @@ class TabSynGenerator(BaseGenerator):
                 bad_val_steps += 1
             return bad_val_steps >= self.patience
 
+        phase_start_net_time = self.net_training_time_
         train_time = 0.0
         timed_out = False
         stop_training = False
@@ -534,6 +538,7 @@ class TabSynGenerator(BaseGenerator):
                 step += 1
                 self.diffusion_trained_steps_ = step
                 train_time += time.monotonic() - step_start_time
+                self.net_training_time_ = phase_start_net_time + train_time
                 if time_cap is not None and train_time > time_cap:
                     print(f"Training timed out after {time_cap} seconds.")
                     timed_out = True

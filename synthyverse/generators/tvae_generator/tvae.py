@@ -190,6 +190,7 @@ class TVAEGenerator(BaseGenerator):
             discrete_features,
             validate_callback=validate_callback,
         )
+        self.net_training_time_ = self.model.net_training_time_
         if getattr(self.model, "timed_out_", False) and use_validation:
             validate()
 

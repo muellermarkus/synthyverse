@@ -2,6 +2,7 @@ import pickle
 import importlib
 import inspect
 import re
+from time import monotonic
 from copy import deepcopy
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -46,6 +47,8 @@ class BaseGenerator(ABC):
         self.full_determinism = full_determinism
         self.ordinal_encoder = None
         self._base_discrete_features = []
+        self.gross_training_time_ = None
+        self.net_training_time_ = None
         if torch.cuda.is_available():
             torch.set_float32_matmul_precision("high")
 
@@ -95,17 +98,33 @@ class BaseGenerator(ABC):
         Returns:
             The fitted generator.
         """
-        discrete_features = list(discrete_features)
-        self._validate_feature_mix(X, discrete_features)
-        self.schema = TabularSchema.from_dataframe(X)
-        X = self._fit_encode_categoricals(X, discrete_features)
-        set_seed(self.random_state, self.full_determinism)
-        self._generate_model_space = True
+        train_start = monotonic()
+        self.net_training_time_ = None
         try:
+            discrete_features = list(discrete_features)
+            self._validate_feature_mix(X, discrete_features)
+            self.schema = TabularSchema.from_dataframe(X)
+            X = self._fit_encode_categoricals(X, discrete_features)
+            set_seed(self.random_state, self.full_determinism)
+            self._generate_model_space = True
             self._fit(X, discrete_features)
         finally:
             self._generate_model_space = False
+            self.gross_training_time_ = monotonic() - train_start
+            if self.net_training_time_ is None:
+                self.net_training_time_ = self.gross_training_time_
         return self
+
+    def get_gross_training_time(self) -> float:
+        """Return seconds spent in the latest fit, including setup and validation."""
+        return self.gross_training_time_
+
+    def get_net_training_time(self) -> float:
+        """Return training-step seconds, excluding validation, for deep models.
+
+        Other generators return the full fit duration.
+        """
+        return self.net_training_time_
 
     def _fit_encode_categoricals(
         self, X: pd.DataFrame, discrete_features: list
@@ -200,6 +219,8 @@ class BaseGenerator(ABC):
             "full_determinism": self.full_determinism,
             "ordinal_encoder": self.ordinal_encoder,
             "_base_discrete_features": self._base_discrete_features,
+            "gross_training_time_": self.gross_training_time_,
+            "net_training_time_": self.net_training_time_,
         }
 
     def _save_extra(self, path: Path) -> None:
